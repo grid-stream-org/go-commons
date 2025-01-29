@@ -4,7 +4,13 @@ GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 
-.PHONY: test run fmt vet tidy help
+.PHONY: test run fmt vet tidy clean coverage help
+
+ifeq ($(OS),Windows_NT)
+    RM_FILE := del /f /q
+else
+    RM_FILE := rm -f
+endif
 
 download: ## Download project dependencies
 	$(GOMOD) download
@@ -20,6 +26,13 @@ vet: ## Run go vet
 
 tidy: ## Tidy up module files
 	$(GOMOD) tidy
+
+clean: ## Clean build files
+	$(RM_FILE) coverage.out
+
+coverage: ## Run tests with coverage
+	$(GOTEST) -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out
 
 help: ## Display this help message
 	@cat $(MAKEFILE_LIST) | grep -e "^[a-zA-Z_-]*: *.*## *" | \
