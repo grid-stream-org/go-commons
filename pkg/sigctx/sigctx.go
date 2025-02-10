@@ -7,7 +7,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/grid-stream-org/batcher/pkg/logger"
+	"github.com/grid-stream-org/go-commons/pkg/logger"
 )
 
 type SignalError struct {

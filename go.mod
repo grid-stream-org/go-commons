@@ -5,7 +5,6 @@ go 1.23.2
 require (
 	cloud.google.com/go/bigquery v1.65.0
 	firebase.google.com/go/v4 v4.15.1
-	github.com/grid-stream-org/batcher v0.3.1
 	github.com/grid-stream-org/grid-stream-protos v0.4.0
 	github.com/matthew-collett/go-ctag v1.0.0
 	github.com/pkg/errors v0.9.1
