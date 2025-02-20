@@ -19,6 +19,7 @@ const (
 	tableDERData         = "der_data"
 	tableProjectAverages = "project_averages"
 	tableUtilities       = "utilities"
+	tableDREvents        = "dr_events"
 )
 
 var validTables = map[string]bool{
@@ -28,6 +29,7 @@ var validTables = map[string]bool{
 	tableDERData:         true,
 	tableProjectAverages: true,
 	tableUtilities:       true,
+	tableDREvents:        true,
 }
 
 type BQClient interface {
