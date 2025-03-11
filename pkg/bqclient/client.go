@@ -3,9 +3,12 @@ package bqclient
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"cloud.google.com/go/bigquery"
+	storage "cloud.google.com/go/bigquery/storage/apiv1"
+	"cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	"github.com/matthew-collett/go-ctag/ctag"
 	"github.com/pkg/errors"
 	"google.golang.org/api/iterator"
@@ -34,6 +37,7 @@ var validTables = map[string]bool{
 
 type BQClient interface {
 	Put(ctx context.Context, table string, data any) error
+	StreamRead(ctx context.Context, table string, projectIDs []string) (<-chan []byte, <-chan error)
 	StreamPut(ctx context.Context, table string, data any) error
 	StreamPutAll(ctx context.Context, inputs map[string][]any) error
 	Query(ctx context.Context, query string, params []bigquery.QueryParameter) (*bigquery.RowIterator, error)
@@ -51,8 +55,9 @@ type Config struct {
 }
 
 type bqClient struct {
-	cfg    *Config
-	client *bigquery.Client
+	cfg        *Config
+	client     *bigquery.Client
+	readClient *storage.BigQueryReadClient
 }
 
 var (
@@ -72,14 +77,20 @@ func New(ctx context.Context, cfg *Config) (BQClient, error) {
 		return nil, err
 	}
 
-	bq, err := bigquery.NewClient(ctx, cfg.ProjectID, option.WithCredentialsFile(cfg.CredsPath))
+	client, err := bigquery.NewClient(ctx, cfg.ProjectID, option.WithCredentialsFile(cfg.CredsPath))
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	readClient, err := storage.NewBigQueryReadClient(ctx, option.WithCredentialsFile(cfg.CredsPath))
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	c := &bqClient{
-		cfg:    cfg,
-		client: bq,
+		cfg:        cfg,
+		client:     client,
+		readClient: readClient,
 	}
 	return c, nil
 }
@@ -266,10 +277,98 @@ func (c *bqClient) Delete(ctx context.Context, table string, id string) error {
 	return err
 }
 
+func (c *bqClient) StreamRead(ctx context.Context, table string, projectIDs []string) (<-chan []byte, <-chan error) {
+	dataChan := make(chan []byte, 100)
+	errChan := make(chan error, 1)
+
+	if err := validateTableName(table); err != nil {
+		errChan <- err
+		close(dataChan)
+		close(errChan)
+		return dataChan, errChan
+	}
+
+	// Create the project_id filter condition
+	filter := ""
+	if len(projectIDs) > 0 {
+		quoted := make([]string, len(projectIDs))
+		for i, id := range projectIDs {
+			quoted[i] = fmt.Sprintf("'%s'", id)
+		}
+		filter = fmt.Sprintf("project_id IN (%s)", strings.Join(quoted, ","))
+	}
+
+	parent := fmt.Sprintf("projects/%s", c.cfg.ProjectID)
+	tablePath := fmt.Sprintf("projects/%s/datasets/%s/tables/%s",
+		c.cfg.ProjectID, c.cfg.DatasetID, table)
+
+	session, err := c.readClient.CreateReadSession(ctx, &storagepb.CreateReadSessionRequest{
+		Parent: parent,
+		ReadSession: &storagepb.ReadSession{
+			Table:      tablePath,
+			DataFormat: storagepb.DataFormat_AVRO,
+			ReadOptions: &storagepb.ReadSession_TableReadOptions{
+				RowRestriction: filter, // Apply the filter here
+			},
+		},
+		MaxStreamCount: 1,
+	})
+
+	// Rest of the function remains the same as your original StreamRead
+	if err != nil {
+		errChan <- err
+		close(dataChan)
+		close(errChan)
+		return dataChan, errChan
+	}
+
+	if len(session.Streams) == 0 {
+		errChan <- errors.New("no streams in session")
+		close(dataChan)
+		close(errChan)
+		return dataChan, errChan
+	}
+
+	go func() {
+		defer close(dataChan)
+		defer close(errChan)
+		streamReader, err := c.readClient.ReadRows(ctx, &storagepb.ReadRowsRequest{
+			ReadStream: session.Streams[0].Name,
+		})
+		if err != nil {
+			errChan <- err
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			default:
+				res, err := streamReader.Recv()
+				if err == io.EOF {
+					return
+				}
+				if err != nil {
+					errChan <- err
+					return
+				}
+				dataChan <- res.GetAvroRows().GetSerializedBinaryRows()
+			}
+		}
+	}()
+	return dataChan, errChan
+}
+
 func (c *bqClient) Close() error {
 	if err := c.client.Close(); err != nil {
 		return errors.WithStack(err)
 	}
+
+	if err := c.readClient.Close(); err != nil {
+		return errors.WithStack(err)
+	}
+
 	return nil
 }
 
